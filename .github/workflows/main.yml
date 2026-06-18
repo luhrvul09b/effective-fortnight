@@ -1,106 +1,60 @@
-name: Launch Live Ngrok Proxy Server
+name: Ubuntu Remote SSH Terminal
 
 on:
-  workflow_dispatch: # Isse aap manually web par ek click se server start kar sakte hain
+  workflow_dispatch: 
 
 jobs:
-  run-proxy:
-    runs-on: ubuntu-latest
-    
+  run-ubuntu:
+    runs-on: ubuntu-20.04
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+    - name: System Update & Install SSH
+      run: |
+        sudo apt update
+        sudo apt install -y openssh-server jq
+        sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        echo "root:vpspass" | sudo chpasswd
+        sudo service ssh restart
 
-      - name: Setup Python Environment
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+    - name: Download and Install Ngrok
+      run: |
+        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+        echo "deb https://ngrok-agent.s3.amazonaws.com/ buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+        sudo apt update && sudo apt install ngrok -y
 
-      - name: Install High-Performance Dependencies
-        run: |
-          pip install fastapi uvicorn httpx pyngrok
+    - name: Connect Ngrok & Show SSH Command
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      run: |
+        ngrok config add-authtoken $NGROK_AUTH_TOKEN
+        ngrok tcp 22 --log=stdout > ngrok.log &
+        
+        # Tunnel start hone ka wait krna
+        sleep 10
+        
+        # Ngrok URL nikalna
+        URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+        
+        # Host aur Port ko alag alag krna taake direct command ban sake
+        HOST=$(echo $URL | sed 's/tcp:\/\///' | cut -d':' -f1)
+        PORT=$(echo $URL | sed 's/tcp:\/\///' | cut -d':' -f2)
+        
+        # Terminal Logs me clear dikhane ke liye
+        echo "=========================================="
+        echo "🎉 VPS READY! CONNECT USING THIS COMMAND:"
+        echo "ssh root@$HOST -p $PORT"
+        echo "Password: vpspass"
+        echo "=========================================="
+        
+        # GitHub Actions ki Summary screen pr print krne ke liye
+        echo "### 🚀 Aapka VPS Ready Ha!" >> $GITHUB_STEP_SUMMARY
+        echo "Terminal ya Termux me ye command paste karein:" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "ssh root@$HOST -p $PORT" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Password:** \`vpspass\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Create Python Proxy Script On The Fly
-        run: |
-          cat << 'EOF' > proxy_server.py
-          import httpx
-          from fastapi import FastAPI, Request, HTTPException
-          from fastapi.middleware.cors import CORSMiddleware
-          from fastapi.responses import StreamingResponse
-
-          app = FastAPI()
-
-          app.add_middleware(
-              CORSMiddleware,
-              allow_origins=["*"],
-              allow_credentials=True,
-              allow_methods=["*"],
-              allow_headers=["*"],
-          )
-
-          @app.api_route("/proxy", methods=["POST", "OPTIONS"])
-          async def proxy_gateway(request: Request):
-              if request.method == "OPTIONS":
-                  return {"status": "ok"}
-
-              target_url = request.headers.get("X-Target-URL")
-              if not target_url:
-                  raise HTTPException(status_code=400, detail="Missing X-Target-URL Header")
-
-              forward_headers = {}
-              headers_to_check = ["authorization", "content-type", "x-api-key", "anthropic-version", "x-goog-api-key"]
-              
-              for key, value in request.headers.items():
-                  if key.lower() in headers_to_check:
-                      forward_headers[key.lower()] = value
-
-              body_bytes = await request.body()
-
-              async def stream_generator():
-                  timeout = httpx.Timeout(60.0, connect=10.0)
-                  async with httpx.AsyncClient(timeout=timeout) as client:
-                      try:
-                          async with client.stream("POST", target_url, headers=forward_headers, content=body_bytes) as response:
-                              async for chunk in response.aiter_bytes():
-                                  yield chunk
-                      except Exception as exc:
-                          yield f"data: {{\"error\": \"{str(exc)}\"}}\n\n".encode('utf-8')
-
-              return StreamingResponse(stream_generator(), media_type="text/event-stream")
-
-          if __name__ == "__main__":
-              import uvicorn
-              uvicorn.run(app, host="127.0.0.1", port=8000)
-          EOF
-
-      - name: Start Proxy Server and Ngrok Tunnel
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        run: |
-          python -c "
-          from pyngrok import ngrok
-          import subprocess
-          import time
-
-          # 1. Authenticate ngrok using GitHub Secret
-          ngrok.set_auth_token('$NGROK_TOKEN')
-
-          # 2. Fire up the local FastAPI Python server in background
-          proc = subprocess.Popen(['python', 'proxy_server.py'])
-          time.sleep(3) # Let server initialize
-
-          # 3. Create the public live ngrok tunnel pointing to local server
-          public_url = ngrok.connect(8000, bind_tls=True)
-          
-          print('\n' + '='*60)
-          print('🚀 TSCOOP PROXY SERVER IS LIVE!')
-          print(f'🔗 TARGET BYPASS URL: {public_url.public_url}/proxy')
-          print('='*60 + '\n')
-
-          # Keep the process locked open so the action runner doesn't stop
-          try:
-              while proc.poll() is None:
-                  time.sleep(5)
-          except KeyboardInterrupt:
-              pass
-          "
+    - name: Keep Alive (6 Hours)
+      run: |
+        # Container ko active rakhne ke liye 6 ghante ka loop
+        sleep 21600
