@@ -5,7 +5,7 @@ on:
 
 jobs:
   run-ubuntu:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04 # Changed to 22.04 taake queue me stuck na ho
     steps:
     - name: System Update & Install SSH
       run: |
@@ -29,13 +29,20 @@ jobs:
         ngrok config add-authtoken $NGROK_AUTH_TOKEN
         ngrok tcp 22 --log=stdout > ngrok.log &
         
-        # Tunnel start hone ka wait krna
+        # Tunnel start hone ka thoda wait krte hain
         sleep 10
         
         # Ngrok URL nikalna
         URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
         
-        # Host aur Port ko alag alag krna taake direct command ban sake
+        # Agar token galat ho ya ngrok fail ho jaye to script ruk jayegi aur error dikhayegi
+        if [ -z "$URL" ] || [ "$URL" == "null" ]; then
+          echo "Ngrok Error: Token sahi nahi ha ya Ngrok limit hit ho gayi ha."
+          cat ngrok.log
+          exit 1
+        fi
+        
+        # Host aur Port alag krna
         HOST=$(echo $URL | sed 's/tcp:\/\///' | cut -d':' -f1)
         PORT=$(echo $URL | sed 's/tcp:\/\///' | cut -d':' -f2)
         
@@ -47,8 +54,8 @@ jobs:
         echo "=========================================="
         
         # GitHub Actions ki Summary screen pr print krne ke liye
-        echo "### 🚀 Aapka VPS Ready Ha!" >> $GITHUB_STEP_SUMMARY
-        echo "Terminal ya Termux me ye command paste karein:" >> $GITHUB_STEP_SUMMARY
+        echo "### 🚀 Aapka Ubuntu 22.04 VPS Ready Ha!" >> $GITHUB_STEP_SUMMARY
+        echo "Apne Termux ya terminal me ye command lagayein:" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
         echo "ssh root@$HOST -p $PORT" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
