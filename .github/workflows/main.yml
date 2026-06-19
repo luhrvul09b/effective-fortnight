@@ -31,30 +31,20 @@ jobs:
         sudo nohup websockify 0.0.0.0:8080 localhost:22 > /tmp/ws.log 2>&1 &
         sleep 3
 
-    - name: Install ngrok
+    - name: Install Cloudflare Tunnel
       run: |
-        curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-        echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-        sudo apt update -q && sudo apt install -y ngrok
-        ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+        chmod +x cloudflared
+        sudo mv cloudflared /usr/local/bin/
 
-    - name: Start ngrok HTTP
+    - name: Start Cloudflare Tunnel
       run: |
-        nohup ngrok http 8080 --log stdout > /tmp/ngrok.log 2>&1 &
-        sleep 8
+        nohup cloudflared tunnel --url http://localhost:8080 --no-autoupdate > /tmp/cf.log 2>&1 &
+        sleep 10
 
     - name: Print Connection Info
       run: |
-        TUNNELS=$(curl -s http://localhost:4040/api/tunnels)
-        HOST=$(echo $TUNNELS | python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
-        for t in data['tunnels']:
-            if t['proto'] == 'https':
-                url = t['public_url'].replace('https://','')
-                print(url)
-                break
-        ")
+        HOST=$(grep -o 'https://[a-zA-Z0-9.-]*trycloudflare\.com' /tmp/cf.log | head -1 | sed 's/https:\/\///')
         echo "=================================="
         echo "       SSH-WS CONNECTION INFO     "
         echo "=================================="
