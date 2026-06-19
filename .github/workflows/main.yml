@@ -19,8 +19,8 @@ jobs:
 
     - name: Create SSH User
       run: |
-        sudo useradd -m -s /bin/bash vpnuser
-        echo "vpnuser:Pass1234!" | sudo chpasswd
+        sudo useradd -m -s /bin/bash Mudassir7771
+        echo "Mudassir7771:Killeryt77719" | sudo chpasswd
         sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
         sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
         sudo systemctl restart ssh
@@ -54,7 +54,7 @@ jobs:
 
     - name: Start ngrok
       run: |
-        nohup ngrok tcp 443 --log stdout > /tmp/ngrok.log 2>&1 &
+        nohup ngrok http 8080 --log stdout > /tmp/ngrok.log 2>&1 &
         sleep 8
 
     - name: Print Connection Info
@@ -64,31 +64,29 @@ jobs:
         import sys, json
         data = json.load(sys.stdin)
         for t in data['tunnels']:
-            addr = t['public_url'].replace('tcp://','')
-            print(addr.split(':')[0])
-        ")
-        PORT=$(echo $TUNNELS | python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
-        for t in data['tunnels']:
-            addr = t['public_url'].replace('tcp://','')
-            print(addr.split(':')[1])
+            if t['proto'] == 'https':
+                url = t['public_url'].replace('https://','')
+                print(url)
+                break
         ")
         echo "=================================="
         echo "       SSH-WS CONNECTION INFO     "
         echo "=================================="
         echo ""
         echo "  Host     : $HOST"
-        echo "  Port     : $PORT"
-        echo "  Username : vpnuser"
-        echo "  Password : Pass1234!"
+        echo "  Port     : 443"
+        echo "  Username : Mudassir7771"
+        echo "  Password : Killeryt77719"
         echo "  SSL/TLS  : Enabled"
         echo ""
-        echo "  Cloudflare Payload:"
-        echo "  GET / HTTP/1.1[crlf]"
-        echo "  Host: $HOST[crlf]"
-        echo "  Upgrade: websocket[crlf]"
-        echo "  Connection: Upgrade[crlf][crlf]"
+        echo "  VPN Format:"
+        echo "  $HOST:443@Mudassir7771:Killeryt77719"
+        echo ""
+        echo "=================================="
+        echo "           PAYLOAD                "
+        echo "=================================="
+        echo ""
+        echo "GET wss://$HOST/ HTTP/1.1[crlf]Host:$HOST[crlf]Upgrade: Websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
         echo ""
         echo "=================================="
 
