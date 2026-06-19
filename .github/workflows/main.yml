@@ -19,8 +19,8 @@ jobs:
 
     - name: Create SSH User
       run: |
-        sudo useradd -m -s /bin/bash ${{ secrets.SSH_USER }}
-        echo "${{ secrets.SSH_USER }}:${{ secrets.SSH_PASSWORD }}" | sudo chpasswd
+        sudo useradd -m -s /bin/bash vpnuser
+        echo "vpnuser:Pass1234!" | sudo chpasswd
         sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
         sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
         sudo systemctl restart ssh
@@ -31,14 +31,17 @@ jobs:
         cat /tmp/server.key /tmp/server.crt > /tmp/server.pem
 
     - name: Start WebSocket Bridge
-      run: nohup websockify 0.0.0.0:8080 localhost:22 > /tmp/ws.log 2>&1 &
+      run: |
+        nohup websockify 0.0.0.0:8080 localhost:22 > /tmp/ws.log 2>&1 &
+        sleep 3
 
     - name: Setup stunnel
       run: |
-        echo "[ws-ssl]" | sudo tee /etc/stunnel/stunnel.conf
+        echo "pid = /tmp/stunnel.pid" | sudo tee /etc/stunnel/stunnel.conf
+        echo "cert = /tmp/server.pem" | sudo tee -a /etc/stunnel/stunnel.conf
+        echo "[ws-ssl]" | sudo tee -a /etc/stunnel/stunnel.conf
         echo "accept = 443" | sudo tee -a /etc/stunnel/stunnel.conf
         echo "connect = 127.0.0.1:8080" | sudo tee -a /etc/stunnel/stunnel.conf
-        echo "cert = /tmp/server.pem" | sudo tee -a /etc/stunnel/stunnel.conf
         sudo stunnel /etc/stunnel/stunnel.conf
         sleep 2
 
@@ -52,21 +55,42 @@ jobs:
     - name: Start ngrok
       run: |
         nohup ngrok tcp 443 --log stdout > /tmp/ngrok.log 2>&1 &
-        sleep 6
+        sleep 8
 
-    - name: Print Info
+    - name: Print Connection Info
       run: |
-        curl -s http://localhost:4040/api/tunnels | python3 -c "
+        TUNNELS=$(curl -s http://localhost:4040/api/tunnels)
+        HOST=$(echo $TUNNELS | python3 -c "
         import sys, json
         data = json.load(sys.stdin)
         for t in data['tunnels']:
             addr = t['public_url'].replace('tcp://','')
-            host, port = addr.split(':')
-            print('Host :', host)
-            print('Port :', port)
-        "
-        echo "User : ${{ secrets.SSH_USER }}"
-        echo "Pass : ${{ secrets.SSH_PASSWORD }}"
+            print(addr.split(':')[0])
+        ")
+        PORT=$(echo $TUNNELS | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        for t in data['tunnels']:
+            addr = t['public_url'].replace('tcp://','')
+            print(addr.split(':')[1])
+        ")
+        echo "=================================="
+        echo "       SSH-WS CONNECTION INFO     "
+        echo "=================================="
+        echo ""
+        echo "  Host     : $HOST"
+        echo "  Port     : $PORT"
+        echo "  Username : vpnuser"
+        echo "  Password : Pass1234!"
+        echo "  SSL/TLS  : Enabled"
+        echo ""
+        echo "  Cloudflare Payload:"
+        echo "  GET / HTTP/1.1[crlf]"
+        echo "  Host: $HOST[crlf]"
+        echo "  Upgrade: websocket[crlf]"
+        echo "  Connection: Upgrade[crlf][crlf]"
+        echo ""
+        echo "=================================="
 
     - name: Keep Alive
       run: sleep 19800
