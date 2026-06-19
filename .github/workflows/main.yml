@@ -14,7 +14,7 @@ jobs:
     - name: Install Packages
       run: |
         sudo apt update -y
-        sudo apt install -y openssh-server stunnel4 curl wget python3 python3-pip
+        sudo apt install -y openssh-server curl wget python3 python3-pip
         pip3 install websockify
 
     - name: Create SSH User
@@ -24,26 +24,14 @@ jobs:
         sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
         sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
         sudo systemctl restart ssh
-
-    - name: Generate SSL Certificate
-      run: |
-        openssl req -x509 -nodes -newkey rsa:2048 -keyout /tmp/server.key -out /tmp/server.crt -days 1 -subj "/CN=tunnel"
-        cat /tmp/server.key /tmp/server.crt > /tmp/server.pem
-
-    - name: Start WebSocket Bridge
-      run: |
-        nohup websockify 0.0.0.0:8080 localhost:22 > /tmp/ws.log 2>&1 &
-        sleep 3
-
-    - name: Setup stunnel
-      run: |
-        echo "pid = /tmp/stunnel.pid" | sudo tee /etc/stunnel/stunnel.conf
-        echo "cert = /tmp/server.pem" | sudo tee -a /etc/stunnel/stunnel.conf
-        echo "[ws-ssl]" | sudo tee -a /etc/stunnel/stunnel.conf
-        echo "accept = 443" | sudo tee -a /etc/stunnel/stunnel.conf
-        echo "connect = 127.0.0.1:8080" | sudo tee -a /etc/stunnel/stunnel.conf
-        sudo stunnel /etc/stunnel/stunnel.conf
         sleep 2
+
+    - name: Start WebSocket on port 80
+      run: |
+        sudo nohup websockify 0.0.0.0:80 localhost:22 > /tmp/ws.log 2>&1 &
+        sleep 3
+        echo "WebSocket status:"
+        cat /tmp/ws.log
 
     - name: Install ngrok
       run: |
@@ -52,9 +40,9 @@ jobs:
         sudo apt update -q && sudo apt install -y ngrok
         ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
 
-    - name: Start ngrok
+    - name: Start ngrok TCP on 80
       run: |
-        nohup ngrok http 8080 --log stdout > /tmp/ngrok.log 2>&1 &
+        nohup ngrok tcp 80 --log stdout > /tmp/ngrok.log 2>&1 &
         sleep 8
 
     - name: Print Connection Info
@@ -64,29 +52,31 @@ jobs:
         import sys, json
         data = json.load(sys.stdin)
         for t in data['tunnels']:
-            if t['proto'] == 'https':
-                url = t['public_url'].replace('https://','')
-                print(url)
-                break
+            addr = t['public_url'].replace('tcp://','')
+            print(addr.split(':')[0])
+        ")
+        PORT=$(echo $TUNNELS | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        for t in data['tunnels']:
+            addr = t['public_url'].replace('tcp://','')
+            print(addr.split(':')[1])
         ")
         echo "=================================="
         echo "       SSH-WS CONNECTION INFO     "
         echo "=================================="
         echo ""
         echo "  Host     : $HOST"
-        echo "  Port     : 443"
+        echo "  Port     : $PORT"
         echo "  Username : Mudassir7771"
         echo "  Password : Killeryt77719"
-        echo "  SSL/TLS  : Enabled"
+        echo "  SSL/TLS  : OFF (WS only)"
         echo ""
-        echo "  VPN Format:"
-        echo "  $HOST:443@Mudassir7771:Killeryt77719"
+        echo "  DarkTunnel Target:"
+        echo "  $HOST:$PORT@Mudassir7771:Killeryt77719"
         echo ""
-        echo "=================================="
-        echo "           PAYLOAD                "
-        echo "=================================="
-        echo ""
-        echo "GET wss://$HOST/ HTTP/1.1[crlf]Host:$HOST[crlf]Upgrade: Websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
+        echo "  Payload:"
+        echo "  GET / HTTP/1.1[crlf]Host:$HOST[crlf]Upgrade: websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
         echo ""
         echo "=================================="
 
