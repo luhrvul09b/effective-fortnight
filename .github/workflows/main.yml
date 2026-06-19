@@ -15,8 +15,10 @@ jobs:
       run: |
         sudo apt update -y
         sudo apt install -y openssh-server curl wget python3 python3-pip autossh
-        sudo pip3 install websockify --break-system-packages || pip3 install websockify
-        websockify --version && echo "websockify OK" || echo "FAILED"
+        sudo pip3 install websockify --break-system-packages
+        WS=$(which websockify || find / -name websockify 2>/dev/null | head -1)
+        echo "websockify path: $WS"
+        test -n "$WS" && echo "websockify OK" || exit 1
 
     - name: Create SSH User
       run: |
@@ -29,13 +31,16 @@ jobs:
 
     - name: Start WebSocket Bridge
       run: |
-        sudo websockify 8080 127.0.0.1:22 &
+        WS=$(which websockify || find / -name websockify 2>/dev/null | head -1)
+        echo "Using: $WS"
+        sudo $WS 8080 127.0.0.1:22 &
         sleep 3
         ss -tlnp | grep 8080 && echo "WS Bridge OK" || echo "WS FAILED"
 
     - name: Generate SSH Key
       run: |
         ssh-keygen -t rsa -b 2048 -f /tmp/id_rsa -N "" -q
+        echo "Key generated"
 
     - name: Start serveo tunnel
       run: |
