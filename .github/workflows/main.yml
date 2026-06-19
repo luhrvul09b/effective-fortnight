@@ -1,67 +1,140 @@
-name: Ubuntu Remote SSH Terminal
+name: SSH-WS SSL Server
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
 
 jobs:
-  run-ubuntu:
-    runs-on: ubuntu-22.04 # Changed to 22.04 taake queue me stuck na ho
+  sshws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
     steps:
-    - name: System Update & Install SSH
+    - name: System Update
+      run: sudo apt update -y
+
+    - name: Install Packages
       run: |
-        sudo apt update
-        sudo apt install -y openssh-server jq
-        sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-        echo "root:vpspass" | sudo chpasswd
+        sudo apt install -y \
+          openssh-server \
+          python3 python3-pip \
+          stunnel4 \
+          curl wget
+
+    - name: Create SSH User
+      run: |
+        sudo useradd -m -s /bin/bash vpnuser
+        echo "vpnuser:${{ secrets.SSH_PASSWORD }}" | sudo chpasswd
+        sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
         sudo service ssh restart
 
-    - name: Download and Install Ngrok
-      run: |
-        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-        echo "deb https://ngrok-agent.s3.amazonaws.com/ buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-        sudo apt update && sudo apt install ngrok -y
+    - name: Install websockify
+      run: pip3 install websockify
 
-    - name: Connect Ngrok & Show SSH Command
-      env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+    - name: Generate SSL Certificate
       run: |
-        ngrok config add-authtoken $NGROK_AUTH_TOKEN
-        ngrok tcp 22 --log=stdout > ngrok.log &
-        
-        # Tunnel start hone ka thoda wait krte hain
-        sleep 10
-        
-        # Ngrok URL nikalna
-        URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-        
-        # Agar token galat ho ya ngrok fail ho jaye to script ruk jayegi aur error dikhayegi
-        if [ -z "$URL" ] || [ "$URL" == "null" ]; then
-          echo "Ngrok Error: Token sahi nahi ha ya Ngrok limit hit ho gayi ha."
-          cat ngrok.log
-          exit 1
-        fi
-        
-        # Host aur Port alag krna
-        HOST=$(echo $URL | sed 's/tcp:\/\///' | cut -d':' -f1)
-        PORT=$(echo $URL | sed 's/tcp:\/\///' | cut -d':' -f2)
-        
-        # Terminal Logs me clear dikhane ke liye
-        echo "=========================================="
-        echo "🎉 VPS READY! CONNECT USING THIS COMMAND:"
-        echo "ssh root@$HOST -p $PORT"
-        echo "Password: vpspass"
-        echo "=========================================="
-        
-        # GitHub Actions ki Summary screen pr print krne ke liye
-        echo "### 🚀 Aapka Ubuntu 22.04 VPS Ready Ha!" >> $GITHUB_STEP_SUMMARY
-        echo "Apne Termux ya terminal me ye command lagayein:" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-        echo "ssh root@$HOST -p $PORT" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "**Password:** \`vpspass\`" >> $GITHUB_STEP_SUMMARY
+        openssl req -x509 -nodes -newkey rsa:2048 \
+          -keyout /tmp/server.key \
+          -out /tmp/server.crt \
+          -days 1 \
+          -subj "/CN=github-runner"
+        cat /tmp/server.key /tmp/server.crt > /tmp/server.pem
 
-    - name: Keep Alive (6 Hours)
+    - name: Setup stunnel (SSH over SSL port 443)
       run: |
-        # Container ko active rakhne ke liye 6 ghante ka loop
-        sleep 21600
+        sudo tee /etc/stunnel/stunnel.conf > /dev/null <<EOF
+        pid = /tmp/stunnel.pid
+        
+        [ssh-ssl]
+        accept = 443
+        connect = 127.0.0.1:22
+        cert = /tmp/server.pem
+        
+        [ws-ssl]
+        accept = 8443
+        connect = 127.0.0.1:8080
+        cert = /tmp/server.pem
+        EOF
+        sudo stunnel /etc/stunnel/stunnel.conf
+
+    - name: Start WebSocket Bridge
+      run: |
+        nohup websockify 0.0.0.0:8080 localhost:22 \
+          --ssl-only \
+          --cert /tmp/server.crt \
+          --key /tmp/server.key \
+          > /tmp/ws.log 2>&1 &
+        sleep 3
+
+    - name: Install ngrok
+      run: |
+        curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+          | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+        echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
+          | sudo tee /etc/apt/sources.list.d/ngrok.list
+        sudo apt update -q && sudo apt install -y ngrok
+        ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
+
+    - name: Start ngrok Tunnels
+      run: |
+        # WebSocket tunnel
+        nohup ngrok http 8080 \
+          --log stdout \
+          --log-level info \
+          > /tmp/ngrok-ws.log 2>&1 &
+
+        # Direct SSH tunnel  
+        nohup ngrok tcp 22 \
+          --log stdout \
+          > /tmp/ngrok-ssh.log 2>&1 &
+
+        sleep 6
+
+    - name: Get URLs & Notify Telegram
+      run: |
+        # URLs fetch karo
+        TUNNELS=$(curl -s http://localhost:4040/api/tunnels)
+        
+        WS_URL=$(echo $TUNNELS | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        for t in data['tunnels']:
+            if '8080' in t.get('config',{}).get('addr',''):
+                print(t['public_url'])
+                break
+        " 2>/dev/null || echo "N/A")
+        
+        SSH_URL=$(echo $TUNNELS | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        for t in data['tunnels']:
+            if t['proto'] == 'tcp':
+                addr = t['public_url'].replace('tcp://','')
+                host, port = addr.split(':')
+                print(f'Host: {host}')
+                print(f'Port: {port}')
+                break
+        " 2>/dev/null || echo "N/A")
+        
+        MSG="🟢 SSH-WS Server Live!
+
+👤 User: vpnuser
+🔑 Pass: ${{ secrets.SSH_PASSWORD }}
+
+🌐 WebSocket URL:
+${WS_URL}
+
+🔗 Direct SSH:
+${SSH_URL}
+
+⏱ Duration: ~5.5 hours
+🔄 Port 443 SSL: Active via stunnel"
+
+        curl -s "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+          --data-urlencode "chat_id=${{ secrets.CHAT_ID }}" \
+          --data-urlencode "text=${MSG}"
+
+    - name: Keep Alive
+      run: sleep 19800
