@@ -14,11 +14,8 @@ jobs:
     - name: Install Packages
       run: |
         sudo apt update -y
-        sudo apt install -y openssh-server curl wget python3 python3-pip autossh
+        sudo apt install -y openssh-server curl wget python3 python3-pip
         sudo pip3 install websockify --break-system-packages
-        WS=$(which websockify || find / -name websockify 2>/dev/null | head -1)
-        echo "websockify path: $WS"
-        test -n "$WS" && echo "websockify OK" || exit 1
 
     - name: Create SSH User
       run: |
@@ -32,47 +29,43 @@ jobs:
     - name: Start WebSocket Bridge
       run: |
         WS=$(which websockify || find / -name websockify 2>/dev/null | head -1)
-        echo "Using: $WS"
         sudo $WS 8080 127.0.0.1:22 &
         sleep 3
-        ss -tlnp | grep 8080 && echo "WS Bridge OK" || echo "WS FAILED"
+        ss -tlnp | grep 8080 && echo "WS OK"
 
-    - name: Generate SSH Key
+    - name: Install bore
       run: |
-        ssh-keygen -t rsa -b 2048 -f /tmp/id_rsa -N "" -q
-        echo "Key generated"
+        curl -L https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o bore.tar.gz
+        tar xf bore.tar.gz
+        sudo mv bore /usr/local/bin/
+        bore --version
 
-    - name: Start serveo tunnel
+    - name: Start bore tunnel
       run: |
-        nohup ssh -o StrictHostKeyChecking=no \
-          -o ServerAliveInterval=30 \
-          -o ExitOnForwardFailure=yes \
-          -i /tmp/id_rsa \
-          -R 80:localhost:8080 \
-          serveo.net \
-          > /tmp/serveo.log 2>&1 &
-        sleep 12
-        cat /tmp/serveo.log
+        nohup bore local 8080 --to bore.pub > /tmp/bore.log 2>&1 &
+        sleep 8
+        cat /tmp/bore.log
 
     - name: Print Connection Info
       run: |
-        HOST=$(grep -o '[a-zA-Z0-9-]*\.serveo\.net' /tmp/serveo.log | head -1)
+        PORT=$(grep -o 'listening at.*:[0-9]*' /tmp/bore.log | grep -o '[0-9]*$' | head -1)
+        HOST="bore.pub"
         echo "=================================="
         echo "       SSH-WS CONNECTION INFO     "
         echo "=================================="
         echo ""
         echo "  Host     : $HOST"
-        echo "  Port     : 443"
+        echo "  Port     : $PORT"
         echo "  Username : Mudassir7771"
         echo "  Password : Killeryt77719"
         echo ""
         echo "  Target:"
-        echo "  $HOST:443@Mudassir7771:Killeryt77719"
+        echo "  $HOST:$PORT@Mudassir7771:Killeryt77719"
         echo ""
         echo "  Proxy: jazz.com.pk:80"
         echo ""
         echo "  Payload:"
-        echo "  GET wss://$HOST/ HTTP/1.1[crlf]Host:$HOST[crlf]Upgrade: Websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
+        echo "  GET / HTTP/1.1[crlf]Host:bore.pub[crlf]Upgrade: Websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
         echo ""
         echo "=================================="
 
