@@ -1,6 +1,6 @@
 name: SSH WebSocket Proxy
 on:
-  workflow_dispatch: # Isse aap manually run kar sakenge
+  workflow_dispatch:
 
 jobs:
   run-proxy:
@@ -13,23 +13,71 @@ jobs:
 
     - name: Install Cloudflared & Create User
       run: |
-        # cloudflared (Cloudflare Tunnel) install karein
+        # cloudflared install karein
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
         chmod +x cloudflared
         
-        # Test SSH user banayein (Username: yomi, Password: password123)
+        # SSH user banayein
         sudo useradd -m -s /bin/bash yomi
         echo "yomi:password123" | sudo chpasswd
 
-    - name: Download and Start SSH WS Proxy
+    - name: Create and Start SSH WS Proxy
       run: |
-        # Python WebSocket proxy script download karein
-        wget https://raw.githubusercontent.com/rerechan02/vps/main/ssh/ws-uat.py
-        
-        # Isko background mein port 8080 par chalaein
-        python3 ws-uat.py --port 8080 &
+        # Yahan hum direct python proxy script create kar rahe hain bina kisi external link ke
+        cat << 'EOF' > ws-proxy.py
+        import socket
+        import threading
+        import select
+
+        def handle_client(client_socket):
+            try:
+                # Client se initial HTTP/WebSocket handshake request read karein
+                request = client_socket.recv(1024).decode('utf-8', errors='ignore')
+                
+                # Check agar yeh websocket/HTTP upgrade request hai
+                if "Upgrade: websocket" in request or "HTTP/1.1" in request:
+                    # Fake 101 Switching Protocols ya 200 OK send karein client ko push dene ke liye
+                    client_socket.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+                    
+                    # Local SSH port 22 se connect karein
+                    ssh_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    ssh_socket.connect(('127.0.0.1', 22))
+                    
+                    # Traffic ko bridge (forward) karein dono ke beech
+                    sockets = [client_socket, ssh_socket]
+                    while True:
+                        readable, _, _ = select.select(sockets, [], [])
+                        if client_socket in readable:
+                            data = client_socket.recv(4096)
+                            if not data: break
+                            ssh_socket.sendall(data)
+                        if ssh_socket in readable:
+                            data = ssh_socket.recv(4096)
+                            if not data: break
+                            client_socket.sendall(data)
+            except Exception as e:
+                pass
+            finally:
+                client_socket.close()
+
+        def main():
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(('0.0.0.0', 8080))
+            server.listen(100)
+            print("WS Proxy running on port 8080...")
+            while True:
+                client, _ = server.accept()
+                threading.Thread(target=handle_client, args=(client,), daemon=True).start()
+
+        if __name__ == '__main__':
+            main()
+        EOF
+
+        # Script ko background mein run karein
+        python3 ws-proxy.py &
 
     - name: Start Cloudflare Quick Tunnel
       run: |
-        # Bina domain ke free tunnel start karein jo port 8080 ko forward karega
+        # Free tunnel start karein jo port 8080 ko proxy karega
         ./cloudflared tunnel --url http://localhost:8080
