@@ -1,4 +1,4 @@
-name: SSH-WS SSL Server
+name: SSH-WS Server
 
 on:
   workflow_dispatch:
@@ -11,130 +11,62 @@ jobs:
     timeout-minutes: 350
 
     steps:
-    - name: System Update
-      run: sudo apt update -y
-
     - name: Install Packages
       run: |
-        sudo apt install -y \
-          openssh-server \
-          python3 python3-pip \
-          stunnel4 \
-          curl wget
+        sudo apt update -y
+        sudo apt install -y openssh-server stunnel4 curl wget python3 python3-pip
+        pip3 install websockify
 
     - name: Create SSH User
       run: |
-        sudo useradd -m -s /bin/bash vpnuser
-        echo "vpnuser:${{ secrets.SSH_PASSWORD }}" | sudo chpasswd
+        sudo useradd -m -s /bin/bash ${{ secrets.SSH_USER }}
+        echo "${{ secrets.SSH_USER }}:${{ secrets.SSH_PASSWORD }}" | sudo chpasswd
         sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
         sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-        sudo service ssh restart
-
-    - name: Install websockify
-      run: pip3 install websockify
+        sudo systemctl restart ssh
 
     - name: Generate SSL Certificate
       run: |
-        openssl req -x509 -nodes -newkey rsa:2048 \
-          -keyout /tmp/server.key \
-          -out /tmp/server.crt \
-          -days 1 \
-          -subj "/CN=github-runner"
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout /tmp/server.key -out /tmp/server.crt -days 1 -subj "/CN=tunnel"
         cat /tmp/server.key /tmp/server.crt > /tmp/server.pem
 
-    - name: Setup stunnel (SSH over SSL port 443)
-      run: |
-        sudo tee /etc/stunnel/stunnel.conf > /dev/null <<EOF
-        pid = /tmp/stunnel.pid
-        
-        [ssh-ssl]
-        accept = 443
-        connect = 127.0.0.1:22
-        cert = /tmp/server.pem
-        
-        [ws-ssl]
-        accept = 8443
-        connect = 127.0.0.1:8080
-        cert = /tmp/server.pem
-        EOF
-        sudo stunnel /etc/stunnel/stunnel.conf
-
     - name: Start WebSocket Bridge
+      run: nohup websockify 0.0.0.0:8080 localhost:22 > /tmp/ws.log 2>&1 &
+
+    - name: Setup stunnel
       run: |
-        nohup websockify 0.0.0.0:8080 localhost:22 \
-          --ssl-only \
-          --cert /tmp/server.crt \
-          --key /tmp/server.key \
-          > /tmp/ws.log 2>&1 &
-        sleep 3
+        echo "[ws-ssl]" | sudo tee /etc/stunnel/stunnel.conf
+        echo "accept = 443" | sudo tee -a /etc/stunnel/stunnel.conf
+        echo "connect = 127.0.0.1:8080" | sudo tee -a /etc/stunnel/stunnel.conf
+        echo "cert = /tmp/server.pem" | sudo tee -a /etc/stunnel/stunnel.conf
+        sudo stunnel /etc/stunnel/stunnel.conf
+        sleep 2
 
     - name: Install ngrok
       run: |
-        curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
-          | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-        echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
-          | sudo tee /etc/apt/sources.list.d/ngrok.list
+        curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+        echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
         sudo apt update -q && sudo apt install -y ngrok
         ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
 
-    - name: Start ngrok Tunnels
+    - name: Start ngrok
       run: |
-        # WebSocket tunnel
-        nohup ngrok http 8080 \
-          --log stdout \
-          --log-level info \
-          > /tmp/ngrok-ws.log 2>&1 &
-
-        # Direct SSH tunnel  
-        nohup ngrok tcp 22 \
-          --log stdout \
-          > /tmp/ngrok-ssh.log 2>&1 &
-
+        nohup ngrok tcp 443 --log stdout > /tmp/ngrok.log 2>&1 &
         sleep 6
 
-    - name: Get URLs & Notify Telegram
+    - name: Print Info
       run: |
-        # URLs fetch karo
-        TUNNELS=$(curl -s http://localhost:4040/api/tunnels)
-        
-        WS_URL=$(echo $TUNNELS | python3 -c "
+        curl -s http://localhost:4040/api/tunnels | python3 -c "
         import sys, json
         data = json.load(sys.stdin)
         for t in data['tunnels']:
-            if '8080' in t.get('config',{}).get('addr',''):
-                print(t['public_url'])
-                break
-        " 2>/dev/null || echo "N/A")
-        
-        SSH_URL=$(echo $TUNNELS | python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
-        for t in data['tunnels']:
-            if t['proto'] == 'tcp':
-                addr = t['public_url'].replace('tcp://','')
-                host, port = addr.split(':')
-                print(f'Host: {host}')
-                print(f'Port: {port}')
-                break
-        " 2>/dev/null || echo "N/A")
-        
-        MSG="🟢 SSH-WS Server Live!
-
-👤 User: vpnuser
-🔑 Pass: ${{ secrets.SSH_PASSWORD }}
-
-🌐 WebSocket URL:
-${WS_URL}
-
-🔗 Direct SSH:
-${SSH_URL}
-
-⏱ Duration: ~5.5 hours
-🔄 Port 443 SSL: Active via stunnel"
-
-        curl -s "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
-          --data-urlencode "chat_id=${{ secrets.CHAT_ID }}" \
-          --data-urlencode "text=${MSG}"
+            addr = t['public_url'].replace('tcp://','')
+            host, port = addr.split(':')
+            print('Host :', host)
+            print('Port :', port)
+        "
+        echo "User : ${{ secrets.SSH_USER }}"
+        echo "Pass : ${{ secrets.SSH_PASSWORD }}"
 
     - name: Keep Alive
       run: sleep 19800
