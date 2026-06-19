@@ -26,12 +26,10 @@ jobs:
         sudo systemctl restart ssh
         sleep 2
 
-    - name: Start WebSocket on port 80
+    - name: Start WebSocket Bridge
       run: |
-        sudo nohup websockify 0.0.0.0:80 localhost:22 > /tmp/ws.log 2>&1 &
+        sudo nohup websockify 0.0.0.0:8080 localhost:22 > /tmp/ws.log 2>&1 &
         sleep 3
-        echo "WebSocket status:"
-        cat /tmp/ws.log
 
     - name: Install ngrok
       run: |
@@ -40,9 +38,9 @@ jobs:
         sudo apt update -q && sudo apt install -y ngrok
         ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
 
-    - name: Start ngrok TCP on 80
+    - name: Start ngrok HTTP
       run: |
-        nohup ngrok tcp 80 --log stdout > /tmp/ngrok.log 2>&1 &
+        nohup ngrok http 8080 --log stdout > /tmp/ngrok.log 2>&1 &
         sleep 8
 
     - name: Print Connection Info
@@ -52,31 +50,27 @@ jobs:
         import sys, json
         data = json.load(sys.stdin)
         for t in data['tunnels']:
-            addr = t['public_url'].replace('tcp://','')
-            print(addr.split(':')[0])
-        ")
-        PORT=$(echo $TUNNELS | python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
-        for t in data['tunnels']:
-            addr = t['public_url'].replace('tcp://','')
-            print(addr.split(':')[1])
+            if t['proto'] == 'https':
+                url = t['public_url'].replace('https://','')
+                print(url)
+                break
         ")
         echo "=================================="
         echo "       SSH-WS CONNECTION INFO     "
         echo "=================================="
         echo ""
         echo "  Host     : $HOST"
-        echo "  Port     : $PORT"
+        echo "  Port     : 443"
         echo "  Username : Mudassir7771"
         echo "  Password : Killeryt77719"
-        echo "  SSL/TLS  : OFF (WS only)"
         echo ""
-        echo "  DarkTunnel Target:"
-        echo "  $HOST:$PORT@Mudassir7771:Killeryt77719"
+        echo "  Target:"
+        echo "  $HOST:443@Mudassir7771:Killeryt77719"
+        echo ""
+        echo "  Proxy: jazz.com.pk:80"
         echo ""
         echo "  Payload:"
-        echo "  GET / HTTP/1.1[crlf]Host:$HOST[crlf]Upgrade: websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
+        echo "  GET wss://$HOST/ HTTP/1.1[crlf]Host:$HOST[crlf]Upgrade: Websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
         echo ""
         echo "=================================="
 
