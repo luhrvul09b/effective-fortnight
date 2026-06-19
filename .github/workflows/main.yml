@@ -14,7 +14,7 @@ jobs:
     - name: Install Packages
       run: |
         sudo apt update -y
-        sudo apt install -y openssh-server curl wget python3 python3-pip
+        sudo apt install -y openssh-server curl wget python3 python3-pip dropbear
         pip3 install websockify
 
     - name: Create SSH User
@@ -26,10 +26,22 @@ jobs:
         sudo systemctl restart ssh
         sleep 2
 
-    - name: Start WebSocket Bridge
+    - name: Start Dropbear on port 2222
       run: |
-        sudo nohup websockify 0.0.0.0:8080 localhost:22 > /tmp/ws.log 2>&1 &
+        sudo dropbear -p 2222 -s -g 2>/dev/null || true
+        sleep 2
+
+    - name: Start websockify port 8080 to SSH
+      run: |
+        sudo nohup websockify --log-file=/tmp/ws.log 8080 127.0.0.1:22 &
         sleep 3
+        echo "WS Log:"
+        cat /tmp/ws.log || true
+
+    - name: Verify websockify running
+      run: |
+        ss -tlnp | grep 8080 && echo "websockify OK" || echo "websockify FAILED"
+        ss -tlnp | grep 22 && echo "SSH OK" || echo "SSH FAILED"
 
     - name: Install Cloudflare Tunnel
       run: |
@@ -40,7 +52,15 @@ jobs:
     - name: Start Cloudflare Tunnel
       run: |
         nohup cloudflared tunnel --url http://localhost:8080 --no-autoupdate > /tmp/cf.log 2>&1 &
-        sleep 10
+        echo "Waiting for tunnel..."
+        for i in {1..30}; do
+          URL=$(grep -o 'https://[a-zA-Z0-9.-]*trycloudflare\.com' /tmp/cf.log | head -1)
+          if [ ! -z "$URL" ]; then
+            echo "Tunnel ready: $URL"
+            break
+          fi
+          sleep 2
+        done
 
     - name: Print Connection Info
       run: |
@@ -63,6 +83,9 @@ jobs:
         echo "  GET wss://$HOST/ HTTP/1.1[crlf]Host:$HOST[crlf]Upgrade: Websocket[crlf]Connection: Keep-Alive[crlf][crlf]"
         echo ""
         echo "=================================="
+        echo ""
+        echo "CF Log tail:"
+        tail -20 /tmp/cf.log
 
     - name: Keep Alive
       run: sleep 19800
