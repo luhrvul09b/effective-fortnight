@@ -11,19 +11,28 @@ jobs:
       with:
         python-version: '3.x'
 
-    - name: Install Cloudflared & Create User
+    - name: Configure and Enable SSH Server
       run: |
-        # cloudflared install karein
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-        chmod +x cloudflared
+        # GitHub runner ka SSH server configure aur start karein
+        sudo apt-get update && sudo apt-get install -y openssh-server
+        sudo systemctl start ssh
         
-        # SSH user banayein
+        # Password authentication enable karein config mein
+        sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+        sudo systemctl restart ssh
+        
+        # Test SSH user banayein
         sudo useradd -m -s /bin/bash yomi
         echo "yomi:password123" | sudo chpasswd
 
-    - name: Create and Start SSH WS Proxy
+    - name: Install Cloudflared
       run: |
-        # Yahan hum direct python proxy script create kar rahe hain bina kisi external link ke
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+        chmod +x cloudflared
+
+    - name: Create and Start Stable WS Proxy
+      run: |
         cat << 'EOF' > ws-proxy.py
         import socket
         import threading
@@ -31,32 +40,39 @@ jobs:
 
         def handle_client(client_socket):
             try:
-                # Client se initial HTTP/WebSocket handshake request read karein
-                request = client_socket.recv(1024).decode('utf-8', errors='ignore')
+                # Payload read karein
+                request = client_socket.recv(4096).decode('utf-8', errors='ignore')
                 
-                # Check agar yeh websocket/HTTP upgrade request hai
                 if "Upgrade: websocket" in request or "HTTP/1.1" in request:
-                    # Fake 101 Switching Protocols ya 200 OK send karein client ko push dene ke liye
-                    client_socket.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+                    # Pure 101 Switching Protocols response bhejein
+                    response = (
+                        "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Accept: foo\r\n\r\n"
+                    )
+                    client_socket.sendall(response.encode())
                     
-                    # Local SSH port 22 se connect karein
+                    # Ab local SSH port 22 se connect karein
                     ssh_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     ssh_socket.connect(('127.0.0.1', 22))
                     
-                    # Traffic ko bridge (forward) karein dono ke beech
                     sockets = [client_socket, ssh_socket]
                     while True:
-                        readable, _, _ = select.select(sockets, [], [])
-                        if client_socket in readable:
-                            data = client_socket.recv(4096)
-                            if not data: break
-                            ssh_socket.sendall(data)
-                        if ssh_socket in readable:
-                            data = ssh_socket.recv(4096)
-                            if not data: break
-                            client_socket.sendall(data)
+                        readable, _, _ = select.select(sockets, [], [], 60)
+                        if not readable:
+                            break # Timeout
+                        for s in readable:
+                            if s is client_socket:
+                                data = client_socket.recv(8192)
+                                if not data: return
+                                ssh_socket.sendall(data)
+                            elif s is ssh_socket:
+                                data = ssh_socket.recv(8192)
+                                if not data: return
+                                client_socket.sendall(data)
             except Exception as e:
-                pass
+                print(f"Error: {e}")
             finally:
                 client_socket.close()
 
@@ -64,20 +80,22 @@ jobs:
             server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.bind(('0.0.0.0', 8080))
-            server.listen(100)
-            print("WS Proxy running on port 8080...")
+            server.listen(200)
+            print("WS Proxy started on port 8080")
             while True:
-                client, _ = server.accept()
-                threading.Thread(target=handle_client, args=(client,), daemon=True).start()
+                try:
+                    client, _ = server.accept()
+                    threading.Thread(target=handle_client, args=(client,), daemon=True).start()
+                except:
+                    break
 
         if __name__ == '__main__':
             main()
         EOF
 
-        # Script ko background mein run karein
+        # Script ko chalaein background mein
         python3 ws-proxy.py &
 
     - name: Start Cloudflare Quick Tunnel
       run: |
-        # Free tunnel start karein jo port 8080 ko proxy karega
         ./cloudflared tunnel --url http://localhost:8080
