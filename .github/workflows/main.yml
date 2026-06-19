@@ -15,10 +15,7 @@ jobs:
       run: |
         sudo apt update -y
         sudo apt install -y openssh-server curl wget python3 python3-pip
-        pip3 install websockify
-        sudo ln -sf $(which websockify) /usr/local/bin/websockify || true
-        sudo ln -sf ~/.local/bin/websockify /usr/local/bin/websockify || true
-        which websockify && echo "websockify PATH OK"
+        pip3 install asyncio websockets
 
     - name: Create SSH User
       run: |
@@ -29,13 +26,58 @@ jobs:
         sudo systemctl restart ssh
         sleep 2
 
+    - name: Create WebSocket Bridge Script
+      run: |
+        cat > /tmp/ws_bridge.py << 'PYEOF'
+        import asyncio
+        import websockets
+        import socket
+
+        async def handle(ws):
+            try:
+                reader, writer = await asyncio.open_connection('127.0.0.1', 22)
+                async def ws_to_ssh():
+                    try:
+                        async for msg in ws:
+                            if isinstance(msg, bytes):
+                                writer.write(msg)
+                            else:
+                                writer.write(msg.encode())
+                            await writer.drain()
+                    except:
+                        pass
+                async def ssh_to_ws():
+                    try:
+                        while True:
+                            data = await reader.read(4096)
+                            if not data:
+                                break
+                            await ws.send(data)
+                    except:
+                        pass
+                await asyncio.gather(ws_to_ssh(), ssh_to_ws())
+            except Exception as e:
+                print(f"Error: {e}")
+            finally:
+                try:
+                    writer.close()
+                except:
+                    pass
+
+        async def main():
+            async with websockets.serve(handle, '0.0.0.0', 8080):
+                print("WS Bridge running on 8080")
+                await asyncio.Future()
+
+        asyncio.run(main())
+        PYEOF
+        echo "Script created"
+
     - name: Start WebSocket Bridge
       run: |
-        WS_BIN=$(which websockify || echo ~/.local/bin/websockify)
-        echo "Using: $WS_BIN"
-        sudo nohup $WS_BIN 8080 127.0.0.1:22 > /tmp/ws.log 2>&1 &
+        nohup python3 /tmp/ws_bridge.py > /tmp/ws.log 2>&1 &
         sleep 3
-        ss -tlnp | grep 8080 && echo "websockify OK" || echo "websockify FAILED"
+        ss -tlnp | grep 8080 && echo "Bridge OK" || echo "Bridge FAILED"
         cat /tmp/ws.log
 
     - name: Install Cloudflare Tunnel
@@ -47,7 +89,6 @@ jobs:
     - name: Start Cloudflare Tunnel
       run: |
         nohup cloudflared tunnel --url http://localhost:8080 --no-autoupdate > /tmp/cf.log 2>&1 &
-        echo "Waiting for tunnel..."
         for i in {1..30}; do
           URL=$(grep -o 'https://[a-zA-Z0-9.-]*trycloudflare\.com' /tmp/cf.log | head -1)
           if [ ! -z "$URL" ]; then
