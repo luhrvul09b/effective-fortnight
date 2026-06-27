@@ -8,26 +8,33 @@ jobs:
     - name: 🛠️ Set up Environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y expect jq curl
+        sudo apt-get install -y expect jq curl sqlite3
         
-    - name: ⚙️ Install and Configure X-UI
+    - name: ⚙️ Install X-UI
       run: |
         wget https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh
         
-        # 'expect' is used to reliably answer the script's interactive prompts
+        # Accept the custom port prompt
         cat << 'EOF' > setup.exp
         set timeout -1
         spawn sudo bash install.sh
         expect {
             "*customize*" { send "y\r"; exp_continue }
-            "*username:*" { send "admin\r"; exp_continue }
-            "*password:*" { send "admin123\r"; exp_continue }
             "*port:*" { send "54321\r"; exp_continue }
             eof
         }
         EOF
-        
         expect setup.exp
+        
+    - name: 🔓 Reset Credentials & Remove WebBasePath
+      run: |
+        # Bypass the randomized security by directly updating the X-UI SQLite database
+        sudo sqlite3 /etc/x-ui/x-ui.db "UPDATE users SET username = 'admin', password = 'admin123' WHERE id = 1;"
+        sudo sqlite3 /etc/x-ui/x-ui.db "UPDATE settings SET value = '' WHERE key = 'webBasePath';"
+        
+        # Restart the panel to apply the database changes
+        sudo systemctl restart x-ui
+        sleep 5
         
     - name: 🌐 Install and Run Ngrok
       run: |
@@ -35,21 +42,14 @@ jobs:
         echo "deb https://ngrok-agent.s3.amazonaws.com/ buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
         sudo apt-get update && sudo apt-get install ngrok -y
         
-        # Authenticate Ngrok using your GitHub Secret
         ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
-        
-        # Start Ngrok in the background
         ngrok http 54321 > /dev/null 2>&1 &
-        
-        # Give Ngrok a few seconds to establish the tunnel
         sleep 10
         
     - name: 📋 Display Panel Details
       run: |
-        # Fetch Ngrok URL safely
         NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
         
-        # Check if Ngrok actually gave us a URL
         if [ "$NGROK_URL" == "null" ] || [ -z "$NGROK_URL" ]; then
           echo "❌ ERROR: Ngrok failed to generate a URL. Please double-check your NGROK_TOKEN secret."
           exit 1
@@ -57,7 +57,7 @@ jobs:
         
         echo "====================================================="
         echo "✅ SUCCESS! Aapka X-UI Panel yahan open hoga:"
-        echo "🔗 Link: $NGROK_URL"
+        echo "🔗 Link: $NGROK_URL/"
         echo "👤 Username: admin"
         echo "🔑 Password: admin123"
         echo "====================================================="
@@ -65,5 +65,4 @@ jobs:
     - name: ⏳ Keep-Alive Timer
       run: |
         echo "⏳ Server chal raha hai... Isko band karne ke liye 'Cancel Workflow' par click karein."
-        # Note: 6 hours is risky for GitHub TOS. Consider lowering this to 'sleep 1h' or '30m'
         sleep 6h
