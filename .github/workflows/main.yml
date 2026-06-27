@@ -1,6 +1,13 @@
+name: V2ray Test
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
     - name: Install X-UI & Ngrok
       run: |
-        # X-UI Panel ko sudo (root) ke sath chalayein
+        # X-UI Panel ko sudo ke sath chalayein
         sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh)" <<EOF
         y
         admin
