@@ -1,14 +1,7 @@
-name: V2ray Test
-on: workflow_dispatch # Isse aap manually run kar sakenge
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
     - name: Install X-UI & Ngrok
       run: |
-        # X-UI Panel Install karna
-        bash <(curl -Ls https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh) <<EOF
+        # X-UI Panel ko sudo (root) ke sath chalayein
+        sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh)" <<EOF
         y
         admin
         admin123
@@ -20,7 +13,7 @@ jobs:
         echo "deb https://ngrok-agent.s3.amazonaws.com/ buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
         sudo apt-get update && sudo apt-get install ngrok
         
-        # Ngrok ko authenticate karein (Apna token yahan dalein)
+        # Ngrok ko authenticate karein
         ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
         
         # X-UI ke port (54321) ko public internet par forward karein
