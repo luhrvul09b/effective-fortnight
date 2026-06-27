@@ -7,21 +7,38 @@ jobs:
     steps:
     - name: Install X-UI & Ngrok
       run: |
-        # X-UI Panel ko sudo ke sath chalayein
-        sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh)" <<EOF
-        y
-        admin
-        admin123
-        54321
-        EOF
+        # 1. X-UI Download aur Install (Auto Inputs)
+        wget https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh
+        sudo bash install.sh <<< $'y\nadmin\nadmin123\n54321\n'
         
-        # Ngrok Install karna
+        # 2. X-UI Start karein
+        sudo systemctl enable x-ui
+        sudo systemctl restart x-ui
+        sleep 5
+        
+        # 3. Ngrok aur JQ (JSON reader) Install karein
         curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
         echo "deb https://ngrok-agent.s3.amazonaws.com/ buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-        sudo apt-get update && sudo apt-get install ngrok
+        sudo apt-get update && sudo apt-get install ngrok jq -y
         
-        # Ngrok ko authenticate karein
+        # 4. Ngrok Token Authenticate karein
         ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
         
-        # X-UI ke port (54321) ko public internet par forward karein
-        ngrok http 54321 --log=stdout
+        # 5. Ngrok ko Background mein start karein
+        # (Agar aapka apna fixed domain lagana hai toh --domain=... add kar lein, wese default theek hai)
+        ngrok http 54321 > /dev/null 2>&1 &
+        
+        # 6. Ngrok ke start hone ka wait karein aur URL nikal kar print karein
+        sleep 8
+        NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+        
+        echo "====================================================="
+        echo "✅ SUCCESS! Aapka X-UI Panel yahan open hoga:"
+        echo "🔗 Link: $NGROK_URL"
+        echo "👤 Username: admin"
+        echo "🔑 Password: admin123"
+        echo "====================================================="
+        
+        # 7. GitHub Action ko band hone se rokne ke liye timer (Max 6 ghante)
+        echo "⏳ Server chal raha hai... Isko band karne ke liye 'Cancel Workflow' par click karein."
+        sleep 6h
