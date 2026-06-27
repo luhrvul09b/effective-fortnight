@@ -1,101 +1,27 @@
-name: SSH WebSocket Proxy
-on:
-  workflow_dispatch:
+name: V2ray Test
+on: workflow_dispatch # Isse aap manually run kar sakenge
 
 jobs:
-  run-proxy:
+  build:
     runs-on: ubuntu-latest
     steps:
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-
-    - name: Configure and Enable SSH Server
+    - name: Install X-UI & Ngrok
       run: |
-        # GitHub runner ka SSH server configure aur start karein
-        sudo apt-get update && sudo apt-get install -y openssh-server
-        sudo systemctl start ssh
-        
-        # Password authentication enable karein config mein
-        sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
-        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
-        sudo systemctl restart ssh
-        
-        # Test SSH user banayein
-        sudo useradd -m -s /bin/bash yomi
-        echo "yomi:password123" | sudo chpasswd
-
-    - name: Install Cloudflared
-      run: |
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-        chmod +x cloudflared
-
-    - name: Create and Start Stable WS Proxy
-      run: |
-        cat << 'EOF' > ws-proxy.py
-        import socket
-        import threading
-        import select
-
-        def handle_client(client_socket):
-            try:
-                # Payload read karein
-                request = client_socket.recv(4096).decode('utf-8', errors='ignore')
-                
-                if "Upgrade: websocket" in request or "HTTP/1.1" in request:
-                    # Pure 101 Switching Protocols response bhejein
-                    response = (
-                        "HTTP/1.1 101 Switching Protocols\r\n"
-                        "Upgrade: websocket\r\n"
-                        "Connection: Upgrade\r\n"
-                        "Sec-WebSocket-Accept: foo\r\n\r\n"
-                    )
-                    client_socket.sendall(response.encode())
-                    
-                    # Ab local SSH port 22 se connect karein
-                    ssh_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    ssh_socket.connect(('127.0.0.1', 22))
-                    
-                    sockets = [client_socket, ssh_socket]
-                    while True:
-                        readable, _, _ = select.select(sockets, [], [], 60)
-                        if not readable:
-                            break # Timeout
-                        for s in readable:
-                            if s is client_socket:
-                                data = client_socket.recv(8192)
-                                if not data: return
-                                ssh_socket.sendall(data)
-                            elif s is ssh_socket:
-                                data = ssh_socket.recv(8192)
-                                if not data: return
-                                client_socket.sendall(data)
-            except Exception as e:
-                print(f"Error: {e}")
-            finally:
-                client_socket.close()
-
-        def main():
-            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server.bind(('0.0.0.0', 8080))
-            server.listen(200)
-            print("WS Proxy started on port 8080")
-            while True:
-                try:
-                    client, _ = server.accept()
-                    threading.Thread(target=handle_client, args=(client,), daemon=True).start()
-                except:
-                    break
-
-        if __name__ == '__main__':
-            main()
+        # X-UI Panel Install karna
+        bash <(curl -Ls https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh) <<EOF
+        y
+        admin
+        admin123
+        54321
         EOF
-
-        # Script ko chalaein background mein
-        python3 ws-proxy.py &
-
-    - name: Start Cloudflare Quick Tunnel
-      run: |
-        ./cloudflared tunnel --url http://localhost:8080
+        
+        # Ngrok Install karna
+        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+        echo "deb https://ngrok-agent.s3.amazonaws.com/ buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+        sudo apt-get update && sudo apt-get install ngrok
+        
+        # Ngrok ko authenticate karein (Apna token yahan dalein)
+        ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
+        
+        # X-UI ke port (54321) ko public internet par forward karein
+        ngrok http 54321 --log=stdout
